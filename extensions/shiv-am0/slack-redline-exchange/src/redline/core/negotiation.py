@@ -327,7 +327,7 @@ class NegotiationService:
             )
         self.store.set_deal_status(deal_id, "closed")
         self.store.add_audit(deal_id, actor=user, side=side, action="deal_closed")
-        blocks, text = build_deal_closed_blocks(deal.name, deal.current_version, side)
+        blocks, text = build_deal_closed_blocks(deal.name, deal.display_version, side)
         await self._post_shared(self.store.get_deal(deal_id), blocks, text)
         return self.store.get_deal(deal_id)
 
@@ -511,7 +511,7 @@ class NegotiationService:
         if not missing:
             return
         for proposal in missing:
-            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.current_version)
+            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.display_version)
             ts = await self._post_shared(deal, blocks, text, thread_ts=job.thread_ts)
             self.store.set_proposal_card_ts(proposal.id, ts)
             if job.thread_ts is None:
@@ -534,7 +534,7 @@ class NegotiationService:
         deal = self.store.get_deal(deal_id)
         redrawn = 0
         for proposal in self.store.pending_proposals_for_deal(deal_id):
-            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.current_version)
+            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.display_version)
             if proposal.card_ts:
                 # The message still exists at this ts even if something overwrote its
                 # content, so updating in place restores the card where people expect it.
@@ -620,7 +620,7 @@ class NegotiationService:
         )
 
         if proposal.card_ts:
-            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.current_version)
+            blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.display_version)
             try:
                 await self.messenger.update_message(
                     deal.shared_channel_id, proposal.card_ts, blocks, text
@@ -753,7 +753,7 @@ class NegotiationService:
             revision_blocks, revision_text = build_revision_card_blocks(deal.name, round_number)
             await self._post_shared(deal, revision_blocks, revision_text, thread_ts=job.thread_ts)
             for proposal in new_rows:
-                blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.current_version)
+                blocks, text = build_proposal_card_blocks(proposal, deal.name, deal.display_version)
                 ts = await self._post_shared(deal, blocks, text, thread_ts=job.thread_ts)
                 self.store.set_proposal_card_ts(proposal.id, ts)
             return
@@ -776,6 +776,7 @@ class NegotiationService:
         if snapshot.result and snapshot.result.version_id:
             version = snapshot.result.version_id
             self.store.set_deal_version(deal.id, version)
+            deal = self.store.get_deal(deal.id)
 
         self.store.set_job_state(job.job_id, JOB_COMPLETED)
         self.store.add_audit(
@@ -784,7 +785,7 @@ class NegotiationService:
         )
 
         outcome_blocks, outcome_text = build_outcome_card_blocks(
-            deal.name, version, committed, rejected
+            deal.name, deal.display_version, committed, rejected
         )
         # Top level, not a thread reply: the outcome is the point of the whole exchange
         # and should be visible without opening anything.
@@ -901,7 +902,11 @@ class NegotiationService:
         return {
             "deal_id": deal.id,
             "name": deal.name,
+            # `current_version` stays the SuperDocs id: it is the REST surface's
+            # contract and the value that ties a deal back upstream. `version` is the
+            # readable counter the Slack cards show.
             "current_version": deal.current_version,
+            "version": deal.display_version,
             "approval_policy": deal.approval_policy,
             "status": deal.status,
             "pending_proposals": len(pending),

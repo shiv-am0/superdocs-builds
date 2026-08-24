@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from ..config import Settings
+from ..core.documents import title_from_filename
 from ..core.negotiation import MessengerPort, NegotiationService
 from .cards import (
     build_document_list_blocks,
@@ -77,7 +78,7 @@ async def handle_file_share(
         )
         return {"deal_id": attach_to_deal_id, "document_id": document.id}
     deal = await service.start_deal(
-        name=deal_name or filename,
+        name=deal_name or title_from_filename(filename),
         started_by_side=side,
         started_by_user=user_id,
         filename=filename,

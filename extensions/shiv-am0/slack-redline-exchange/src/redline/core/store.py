@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS deals (
     approval_policy TEXT NOT NULL DEFAULT 'dual_consent',
     shared_channel_id TEXT NOT NULL,
     current_version TEXT NOT NULL DEFAULT 'v1',
+    version_number INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL
 );
@@ -108,6 +109,18 @@ class DealRow:
     current_version: str
     status: str
     created_at: str
+    version_number: int = 1
+
+    @property
+    def display_version(self) -> str:
+        """A version people can say out loud.
+
+        SuperDocs identifies versions by UUID, which is right for traceability and
+        useless in a Slack message -- nobody reads 'updated to b196b9f1-4aff-...'.
+        The UUID stays in current_version and in the audit trail; this is what the
+        cards show.
+        """
+        return f"v{self.version_number}"
 
 
 @dataclass
@@ -190,6 +203,7 @@ class Store:
         added: list[tuple[str, str, str]] = [
             ("jobs", "document_id", "TEXT"),
             ("proposals", "document_id", "TEXT"),
+            ("deals", "version_number", "INTEGER NOT NULL DEFAULT 1"),
         ]
         for table, column, column_type in added:
             existing = {
@@ -266,6 +280,7 @@ class Store:
             approval_policy=row["approval_policy"],
             shared_channel_id=row["shared_channel_id"],
             current_version=row["current_version"],
+            version_number=row["version_number"],
             status=row["status"],
             created_at=row["created_at"],
         )
@@ -326,8 +341,11 @@ class Store:
         )
 
     def set_deal_version(self, deal_id: str, version: str) -> None:
+        """Record SuperDocs' version id and advance the human-facing counter."""
         self._execute(
-            "UPDATE deals SET current_version = ? WHERE id = ?", (version, deal_id)
+            "UPDATE deals SET current_version = ?, version_number = version_number + 1"
+            " WHERE id = ?",
+            (version, deal_id),
         )
 
     def set_deal_status(self, deal_id: str, status: str) -> None:
