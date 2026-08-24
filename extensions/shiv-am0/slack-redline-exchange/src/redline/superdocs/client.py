@@ -172,6 +172,7 @@ class SuperDocsClient:
             download_url=data.get("download_url"),
             raw={} if raw_bytes else data,
             content_raw=raw_bytes,
+            warnings=data.get("warnings"),
         )
 
 

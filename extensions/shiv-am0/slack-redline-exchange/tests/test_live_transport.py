@@ -184,3 +184,65 @@ async def test_an_error_on_a_binary_endpoint_still_reports_properly():
     with pytest.raises(SuperDocsAPIError) as excinfo:
         await _client(handler).export_document("s1", fmt="docx")
     assert excinfo.value.code == "session_not_found"
+
+
+async def test_a_markdown_export_returns_bytes_not_just_text():
+    """Regression: text-format exports came back with no bytes to hand anyone.
+
+    `export` documents docx, pdf, html, markdown and txt. Treating the text formats as
+    "text" rather than "a file" meant `content_bytes()` raised for three of the five.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"# Master Services Agreement\n\nSection 8...",
+            headers={
+                "content-type": "text/markdown; charset=utf-8",
+                "content-disposition": 'attachment; filename="MSA.md"',
+            },
+        )
+
+    result = await _client(handler).export_document("s1", fmt="md")
+    assert result.content_bytes().startswith(b"# Master Services Agreement")
+    assert result.filename == "MSA.md"
+
+
+async def test_export_warnings_are_surfaced_not_swallowed():
+    """A non-fatal problem the server told us about must not vanish into a success."""
+    import base64 as b64
+
+    warnings = [{"code": "unsupported_style", "message": "a table style was simplified"}]
+    header = b64.b64encode(json.dumps(warnings).encode()).decode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"PK\x03\x04binary",
+            headers={
+                "content-type": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                "x-export-warnings": header,
+            },
+        )
+
+    result = await _client(handler).export_document("s1", fmt="docx")
+    assert result.warnings == warnings
+
+
+async def test_a_malformed_warnings_header_does_not_break_a_good_export():
+    """The warning must never be able to break the thing it is warning about."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"PK\x03\x04binary",
+            headers={
+                "content-type": "application/pdf",
+                "x-export-warnings": "!!!not-base64!!!",
+            },
+        )
+
+    result = await _client(handler).export_document("s1", fmt="pdf")
+    assert result.content_bytes() == b"PK\x03\x04binary"
+    assert result.warnings is None

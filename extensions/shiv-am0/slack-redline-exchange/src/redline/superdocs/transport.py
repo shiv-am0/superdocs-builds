@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import re
 from typing import Any, Protocol
 
@@ -47,10 +49,37 @@ def _decode(response: httpx.Response) -> dict[str, Any]:
     content_type = response.headers.get("content-type", "")
     if "json" in content_type.lower():
         return response.json()
+
+    # Every non-JSON body carries its bytes, including the text formats: `export`
+    # documents docx, pdf, html, markdown and txt, and a markdown export is just as
+    # much a file to be handed to someone as a .docx is.
+    body: dict[str, Any] = {
+        "content_bytes": response.content,
+        "filename": _filename_from_disposition(
+            response.headers.get("content-disposition", "")
+        ),
+    }
     if content_type.startswith(("text/", "application/xml")):
-        return {"text": response.text}
-    filename = _filename_from_disposition(response.headers.get("content-disposition", ""))
-    return {"content_bytes": response.content, "filename": filename}
+        body["text"] = response.text
+    warnings = _export_warnings(response.headers.get("x-export-warnings", ""))
+    if warnings:
+        body["warnings"] = warnings
+    return body
+
+
+def _export_warnings(header: str) -> Any:
+    """Decode the base64 JSON of non-fatal export problems, if the server sent any.
+
+    Dropping these would let an export report success while quietly knowing something
+    was lost. A malformed header is itself not worth failing an otherwise good export,
+    so it degrades to None rather than raising.
+    """
+    if not header:
+        return None
+    try:
+        return json.loads(base64.b64decode(header))
+    except Exception:  # noqa: BLE001 - a warning must never break the thing it warns about
+        return None
 
 
 def _filename_from_disposition(disposition: str) -> str | None:

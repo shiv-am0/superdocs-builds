@@ -162,6 +162,7 @@ class ExportResult:
     download_url: str | None
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
     content_raw: bytes | None = field(default=None, repr=False)
+    warnings: Any = None
 
     def content_bytes(self) -> bytes:
         import base64
