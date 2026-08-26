@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = 2.0
     warn_after_seconds: float = 60.0
     max_job_wait_seconds: float = 900.0
+    # How long an identical propose request folds into the previous one instead of
+    # starting (and billing) a second SuperDocs job. Jobs still in review dedupe
+    # regardless of age; this window only covers repeats after one has finished.
+    idempotency_window_seconds: float = 120.0
 
     vendor_team_id: str = "T_VENDOR"
     customer_team_id: str = "T_CUSTOMER"

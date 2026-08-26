@@ -42,7 +42,7 @@ if the API is unreachable.
 ```bash
 uv sync --extra dev
 uv run python demo/run_demo.py   # full negotiation, keyless, against the built-in fake
-uv run pytest                    # 104 tests, all offline, no live key required
+uv run pytest                    # 118 tests, all offline, no live key required
 ```
 
 That is the one documented command a stranger needs: `uv run python demo/run_demo.py`
@@ -199,7 +199,9 @@ status/history while Slack drives the negotiation.
    real OOXML `w:ins`/`w:del` runs attributed to "Vendor" or "Customer"; rejected
    proposals go into an honest appendix table with the feedback that killed them;
    anything we can't confidently place gets its own "Unmatched Changes" section instead
-   of a guess.
+   of a guess. Additions are positioned with the `insert_after_chunk_id` anchor SuperDocs
+   returns, so a new clause lands where it belongs rather than at the end of the file.
+   See `tests/test_export_anchors.py`.
 9. **Multi-document deals.** A deal holds one authoritative contract plus any number of
    supporting documents (amendments, SOWs, counterparty markups). Supporting files join
    the same SuperDocs session using `open_mode=background`, so they are editable and
@@ -216,6 +218,14 @@ status/history while Slack drives the negotiation.
     channel go silent (and look crashed), the app posts a "still working, this is not a
     failure" note. A failed progress ping is recorded in the audit trail and never aborts
     an otherwise healthy job. See `tests/test_progress.py`.
+12. **Proposing twice does not pay twice.** `propose` is the call that spends a SuperDocs
+    operation, so it is guarded by an idempotency key derived from
+    `(deal_id, document_id, instruction)` — normalised for whitespace and case — or
+    supplied by the caller. A repeat folds into the in-flight job instead of starting a
+    second one, and the fold is written to the audit trail as `propose_deduplicated`
+    rather than hidden. Jobs still awaiting review dedupe regardless of age; finished
+    ones only inside `IDEMPOTENCY_WINDOW_SECONDS` (default 120), because re-proposing the
+    same clause later in a negotiation is legitimate work. See `tests/test_idempotency.py`.
 
 ## Architecture
 
@@ -294,6 +304,15 @@ in one place, not just in commit history.
   the audit trail as `boundary_violation_blocked` / `propose_refused`, and is reported
   to the acting side's own internal channel — never to the shared channel, and never
   silently swallowed.
+- **The idempotency key is derived, not demanded.** The obvious design is to require
+  callers to send a key. That protects a disciplined script and does nothing for the
+  double-clicked slash command, which is where the money actually leaks. So the key is
+  computed from the deal, the target document and the normalised instruction, and a
+  caller-supplied key overrides it when the caller wants to define sameness itself. The
+  cost of deriving it is that two genuinely-intended identical proposals inside the
+  window collapse into one; the window is deliberately short, and jobs already in review
+  dedupe regardless of age because the humans still owe a decision on that exact change.
+
 - **Track-changes export is generated locally.** SuperDocs's own `/documents/export`
   gives us the current clean version. The lawyer-facing redline is built by this app,
   locally, from the original uploaded bytes plus the locally-recorded proposal/decision
@@ -333,14 +352,6 @@ nothing in the negotiation logic is specific to the demo contract's clauses.
 
 ## What we cut, and why
 
-- **No idempotency key on `propose`.** Submitting the same instruction twice starts two
-  SuperDocs jobs and bills two operations. Every *decision* path is idempotent — a
-  proposal already resolved is refused, and redrawing a card can never invent a vote —
-  but the operation that actually costs money is not. The honest fix is a
-  caller-supplied idempotency key hashed over `(deal_id, document_id, instruction)`,
-  with a short dedupe window; it was cut for time, not because it is hard. Flagged
-  because "idempotency wherever an operation costs money" is a standard this build is
-  measured against and does not fully meet.
 - **The Slack upload path reads the whole file into memory.** `POST /deals/upload` on the
   REST surface streams in chunks with an explicit size cap, but the Slack `file_shared`
   handler downloads the document whole before uploading it. Fine for contracts, which are
@@ -351,13 +362,6 @@ nothing in the negotiation logic is specific to the demo contract's clauses.
   (`usage.monthly_used` / `monthly_remaining` on every job). Adding a second cost ledger
   on top would have been scope creep against the S3 card; noted here as an honest cut,
   not an oversight.
-- **No `insert_after_chunk_id` positioning in the redline export.** `ProposalRow` doesn't
-  persist SuperDocs' chunk-anchor id, so `create` operations in the local track-changes
-  export are appended at the end of the document rather than inserted exactly where
-  SuperDocs placed them. The clean export (`export_clean`, straight from SuperDocs) is
-  always positionally exact; only the *locally rebuilt* redline export has this
-  limitation, and it's covered by an honest "Unmatched Changes" section rather than a
-  silent wrong-location guess.
 - **No revision-round UI beyond what SuperDocs itself drives.** When `dual_consent`
   triggers SuperDocs' automatic revision round (every change in a batch rejected, with
   feedback), we re-post the new proposal cards SuperDocs drafts; we don't build a second,
@@ -409,7 +413,7 @@ Logged as the brief asks, rather than waiting for clarification:
 ## Testing
 
 ```bash
-uv run pytest          # 104 tests
+uv run pytest          # 118 tests
 uv run ruff check src tests --fix
 ```
 
@@ -432,6 +436,8 @@ API key, no real Slack. Coverage by requirement:
 | Side identity, overrides, and forged cross-side decisions | `tests/test_identity.py` |
 | Real HTTP transport: auth, payload shapes, error mapping | `tests/test_live_transport.py` |
 | SuperDocs client / fake behavior (from the prior phase) | `tests/test_superdocs_client.py` |
+| Proposing twice bills one operation, and the fold is audited | `tests/test_idempotency.py` |
+| Added clauses land at their anchor; unanchored ones are reported | `tests/test_export_anchors.py` |
 | Deal lifecycle: second document joins, close, promote the authoritative contract | `tests/test_deal_lifecycle.py` |
 | Two real workspaces: per-side tokens, per-workspace file ingest | `tests/test_two_workspace.py` |
 | Decision outcomes reach both sides; a failed notification never undoes a decision | `tests/test_notifications.py` |
@@ -471,5 +477,5 @@ demo/
   Acme_Globex_Amendment_1.docx    synthetic supporting document (committed)
   run_demo.py                     full walkthrough incl. leak attempt, search, resume
   output/                         generated exports (gitignored except .gitkeep)
-tests/                   104 tests, all offline
+tests/                   118 tests, all offline
 ```

@@ -4,7 +4,7 @@ import json
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 SCHEMA = """
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     state TEXT NOT NULL,
     thread_ts TEXT,
     document_id TEXT,
+    idempotency_key TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -56,6 +57,8 @@ CREATE TABLE IF NOT EXISTS proposals (
     ai_explanation TEXT NOT NULL,
     proposed_by_side TEXT NOT NULL,
     document_id TEXT,
+    chunk_id TEXT,
+    insert_after_chunk_id TEXT,
     vendor_decision TEXT,
     customer_decision TEXT,
     vendor_feedback TEXT,
@@ -147,6 +150,8 @@ class ProposalRow:
     ai_explanation: str
     proposed_by_side: str
     document_id: str | None = None
+    chunk_id: str | None = None
+    insert_after_chunk_id: str | None = None
     vendor_decision: str | None = None
     customer_decision: str | None = None
     vendor_feedback: str | None = None
@@ -167,6 +172,7 @@ class JobRow:
     state: str
     thread_ts: str | None = None
     document_id: str | None = None
+    idempotency_key: str | None = None
     created_at: str = ""
 
 
@@ -204,6 +210,9 @@ class Store:
             ("jobs", "document_id", "TEXT"),
             ("proposals", "document_id", "TEXT"),
             ("deals", "version_number", "INTEGER NOT NULL DEFAULT 1"),
+            ("jobs", "idempotency_key", "TEXT"),
+            ("proposals", "chunk_id", "TEXT"),
+            ("proposals", "insert_after_chunk_id", "TEXT"),
         ]
         for table, column, column_type in added:
             existing = {
@@ -359,8 +368,8 @@ class Store:
     def create_job(self, job: JobRow) -> None:
         self._execute(
             "INSERT INTO jobs (job_id, deal_id, instruction, requested_by_side,"
-            " requested_by_user, state, thread_ts, document_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " requested_by_user, state, thread_ts, document_id, idempotency_key, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 job.job_id,
                 job.deal_id,
@@ -370,6 +379,7 @@ class Store:
                 job.state,
                 job.thread_ts,
                 job.document_id,
+                job.idempotency_key,
                 utcnow(),
             ),
         )
@@ -385,6 +395,7 @@ class Store:
             state=row["state"],
             thread_ts=row["thread_ts"],
             document_id=row["document_id"],
+            idempotency_key=row["idempotency_key"],
             created_at=row["created_at"],
         )
 
@@ -401,6 +412,43 @@ class Store:
         )
         return [self._job_from_row(r) for r in rows]
 
+    def find_job_by_idempotency_key(
+        self,
+        deal_id: str,
+        idempotency_key: str,
+        active_states: tuple[str, ...],
+        window_seconds: float,
+    ) -> JobRow | None:
+        """Find a job that a repeated request should be folded into, or None.
+
+        A job matches when it carries the same key on the same deal AND either it is
+        still in flight (any of `active_states`), or it was created inside the dedupe
+        window. In-flight jobs match regardless of age on purpose: if the identical
+        instruction is already sitting in review, starting a second one bills a second
+        operation for a decision the humans have not made yet.
+        """
+        placeholders = ",".join("?" for _ in active_states)
+        clauses = [f"state IN ({placeholders})"]
+        params: list[Any] = [deal_id, idempotency_key, *active_states]
+
+        # Timestamps are stored to the second, so a window of zero would still match
+        # anything created in the same second. Treat "no window" as exactly that and
+        # drop the clause, leaving only in-flight jobs to dedupe against.
+        if window_seconds > 0:
+            cutoff = (
+                datetime.now(UTC) - timedelta(seconds=window_seconds)
+            ).isoformat(timespec="seconds")
+            clauses.append("created_at >= ?")
+            params.append(cutoff)
+
+        rows = self._execute(
+            "SELECT * FROM jobs WHERE deal_id = ? AND idempotency_key = ?"
+            f" AND ({' OR '.join(clauses)})"
+            " ORDER BY rowid DESC LIMIT 1",
+            tuple(params),
+        )
+        return self._job_from_row(rows[0]) if rows else None
+
     def set_job_state(self, job_id: str, state: str, thread_ts: str | None = None) -> None:
         if thread_ts is not None:
             self._execute(
@@ -416,8 +464,9 @@ class Store:
         for p in proposals:
             self._execute(
                 "INSERT INTO proposals (id, deal_id, job_id, change_id, operation, old_html,"
-                " new_html, ai_explanation, proposed_by_side, document_id, state, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                " new_html, ai_explanation, proposed_by_side, document_id, chunk_id,"
+                " insert_after_chunk_id, state, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
                 (
                     p.id,
                     p.deal_id,
@@ -429,6 +478,8 @@ class Store:
                     p.ai_explanation,
                     p.proposed_by_side,
                     p.document_id,
+                    p.chunk_id,
+                    p.insert_after_chunk_id,
                     utcnow(),
                 ),
             )
@@ -504,6 +555,8 @@ class Store:
             ai_explanation=row["ai_explanation"],
             proposed_by_side=row["proposed_by_side"],
             document_id=row["document_id"],
+            chunk_id=row["chunk_id"],
+            insert_after_chunk_id=row["insert_after_chunk_id"],
             vendor_decision=row["vendor_decision"],
             customer_decision=row["customer_decision"],
             vendor_feedback=row["vendor_feedback"],

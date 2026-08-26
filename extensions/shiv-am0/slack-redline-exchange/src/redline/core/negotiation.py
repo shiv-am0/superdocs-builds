@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -186,6 +187,7 @@ class NegotiationService:
         instruction: str,
         source_channel_id: str,
         document_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> JobRow:
         deal = self.store.get_deal(deal_id)
         audience = boundary.classify_source(source_channel_id, deal.shared_channel_id)
@@ -204,6 +206,34 @@ class NegotiationService:
             raise
 
         target_document = self._resolve_document(deal.id, document_id)
+
+        # Starting an edit costs a SuperDocs operation, so a repeated request must not
+        # buy a second one. The key is derived from what actually determines the work --
+        # the deal, the target document and the instruction -- so a double-clicked slash
+        # command dedupes without the caller doing anything. A caller that wants to
+        # control the boundary itself (a retrying script, say) supplies its own key.
+        resolved_key = idempotency_key or self._derive_idempotency_key(
+            deal.id,
+            target_document.id if target_document else None,
+            instruction,
+        )
+        existing = self.store.find_job_by_idempotency_key(
+            deal.id,
+            resolved_key,
+            active_states=(JOB_RUNNING, JOB_AWAITING_REVIEW),
+            window_seconds=self.settings.idempotency_window_seconds,
+        )
+        if existing is not None:
+            self.store.add_audit(
+                deal.id,
+                actor=user,
+                side=side,
+                action="propose_deduplicated",
+                job_id=existing.job_id,
+                reason="an identical instruction is already in flight or was just run",
+            )
+            return existing
+
         job_id = await self.client.start_edit(
             deal.superdocs_session_id,
             instruction,
@@ -218,6 +248,7 @@ class NegotiationService:
             requested_by_user=user,
             state=JOB_RUNNING,
             document_id=target_document.id if target_document else None,
+            idempotency_key=resolved_key,
         )
         self.store.create_job(job)
         self.store.add_audit(
@@ -229,6 +260,20 @@ class NegotiationService:
             document=target_document.filename if target_document else None,
         )
         return self.store.get_job(job_id)
+
+    @staticmethod
+    def _derive_idempotency_key(
+        deal_id: str, document_id: str | None, instruction: str
+    ) -> str:
+        """Hash the three things that decide what work a propose actually does.
+
+        Whitespace and case are normalised so that a re-typed instruction counts as the
+        same request; anything genuinely different produces a different key and is
+        allowed through.
+        """
+        normalized = " ".join((instruction or "").split()).casefold()
+        raw = f"{deal_id}\x00{document_id or ''}\x00{normalized}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _resolve_document(self, deal_id: str, document_id: str | None) -> DocumentRow | None:
         documents = self.store.documents_for_deal(deal_id)
@@ -474,6 +519,8 @@ class NegotiationService:
                             ai_explanation=change.ai_explanation,
                             proposed_by_side=job.requested_by_side,
                             document_id=job.document_id,
+                            chunk_id=change.chunk_id,
+                            insert_after_chunk_id=change.insert_after_chunk_id,
                         )
                         for change in snapshot.pending_changes
                     ]
@@ -737,6 +784,8 @@ class NegotiationService:
                     ai_explanation=change.ai_explanation,
                     proposed_by_side=job.requested_by_side,
                     document_id=job.document_id,
+                    chunk_id=change.chunk_id,
+                    insert_after_chunk_id=change.insert_after_chunk_id,
                 )
                 for change in snapshot.pending_changes
             ]

@@ -222,6 +222,10 @@ class ProposeRequest(BaseModel):
     instruction: str
     source_channel_id: str
     document_id: str | None = None
+    # Optional. Omit it and one is derived from (deal, document, instruction), which is
+    # enough to stop a retried call buying a second SuperDocs operation. Supply your own
+    # when the caller wants to define what "the same request" means.
+    idempotency_key: str | None = None
 
 
 @router.post("/deals/{deal_id}/propose")
@@ -234,6 +238,7 @@ async def propose(deal_id: str, payload: ProposeRequest, service: ServiceDep) ->
             payload.instruction,
             payload.source_channel_id,
             document_id=payload.document_id,
+            idempotency_key=payload.idempotency_key,
         )
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 from datetime import UTC, datetime
+from typing import Any
 
 import docx
 from docx.oxml.ns import qn
@@ -77,11 +78,17 @@ def _find_paragraph(document: docx.Document, needle: str):
 
 def _apply_edit(
     document: docx.Document, proposal: ProposalRow, author: str, date: str, ids: _RevisionIdCounter
-) -> bool:
+) -> Any | None:
+    """Apply an edit and return the paragraph it landed on, or None if unmatched.
+
+    The paragraph is returned rather than a bool so the caller can remember which
+    paragraph a chunk id refers to; a later `create` anchored to that chunk can then be
+    positioned exactly instead of appended.
+    """
     old_text = _clean_html(proposal.old_html)
     paragraph = _find_paragraph(document, old_text)
     if paragraph is None:
-        return False
+        return None
     p = paragraph._p
     for run_element in p.findall(qn("w:r")):
         p.remove(run_element)
@@ -89,30 +96,90 @@ def _apply_edit(
     p.append(_wrap("w:del", _del_run(old_text), author, date, ids.next()))
     if new_text:
         p.append(_wrap("w:ins", _run(new_text), author, date, ids.next()))
-    return True
+    return paragraph
 
 
 def _apply_delete(
     document: docx.Document, proposal: ProposalRow, author: str, date: str, ids: _RevisionIdCounter
-) -> bool:
+) -> Any | None:
+    """Apply a deletion and return the paragraph it landed on, or None if unmatched."""
     old_text = _clean_html(proposal.old_html)
     paragraph = _find_paragraph(document, old_text)
     if paragraph is None:
-        return False
+        return None
     p = paragraph._p
     for run_element in p.findall(qn("w:r")):
         p.remove(run_element)
     p.append(_wrap("w:del", _del_run(old_text), author, date, ids.next()))
-    return True
+    return paragraph
+
+
+def _chunk_ordinal(chunk_id: str | None) -> int | None:
+    """Turn a SuperDocs chunk id such as 'c0007' into its 1-based position.
+
+    Chunk ids are handed out in document order as the source is parsed, so the trailing
+    number is the block's position. Anything that does not follow that shape returns
+    None and the caller falls back rather than guessing.
+    """
+    if not chunk_id:
+        return None
+    digits = re.search(r"(\d+)\s*$", chunk_id)
+    if not digits:
+        return None
+    ordinal = int(digits.group(1))
+    return ordinal if ordinal > 0 else None
+
+
+def _resolve_anchor(
+    document: docx.Document, proposal: ProposalRow, located: dict[str, Any]
+) -> Any | None:
+    """Find the paragraph a created block should follow, or None to append.
+
+    Two sources, best first. If an earlier edit or delete was matched by its text and
+    carried the same chunk id, we know exactly which paragraph that chunk is, so we use
+    it. Otherwise we fall back to the chunk's ordinal position. Out-of-range ordinals
+    return None so the caller appends and reports the change as unmatched instead of
+    dropping it somewhere arbitrary.
+    """
+    anchor_id = proposal.insert_after_chunk_id
+    if not anchor_id:
+        return None
+    known = located.get(anchor_id)
+    if known is not None:
+        return known
+    ordinal = _chunk_ordinal(anchor_id)
+    if ordinal is None:
+        return None
+    paragraphs = document.paragraphs
+    index = ordinal - 1
+    if 0 <= index < len(paragraphs):
+        return paragraphs[index]
+    return None
 
 
 def _apply_create(
-    document: docx.Document, proposal: ProposalRow, author: str, date: str, ids: _RevisionIdCounter
-) -> None:
+    document: docx.Document,
+    proposal: ProposalRow,
+    author: str,
+    date: str,
+    ids: _RevisionIdCounter,
+    anchor: Any | None = None,
+) -> bool:
+    """Insert the new text as a tracked insertion.
+
+    Returns True when the block landed in a known position, False when it was appended
+    at the end because no anchor could be resolved -- the caller reports that case
+    honestly rather than letting a reader assume the position is meaningful.
+    """
     new_text = _clean_html(proposal.new_html)
     paragraph = document.add_paragraph()
     p = paragraph._p
     p.append(_wrap("w:ins", _run(new_text), author, date, ids.next()))
+    if anchor is None:
+        return False
+    p.getparent().remove(p)
+    anchor._p.addnext(p)
+    return True
 
 
 def _append_heading(document: docx.Document, text: str, level: int = 1) -> None:
@@ -175,16 +242,31 @@ def build_redline_docx(
     unmatched: list[ProposalRow] = []
 
     if inline_capable:
+        # Two passes on purpose. Edits and deletes are located by their original text,
+        # which teaches us which paragraph each chunk id refers to. Creates run second so
+        # they can anchor to a chunk another change already pinned down, instead of
+        # falling back to an ordinal guess or being appended at the end.
+        located: dict[str, Any] = {}
+        creates: list[ProposalRow] = []
         for proposal in committed:
             author = SIDE_AUTHORS.get(proposal.proposed_by_side, proposal.proposed_by_side)
             if proposal.operation == "edit":
-                ok = _apply_edit(document, proposal, author, date, ids)
+                paragraph = _apply_edit(document, proposal, author, date, ids)
             elif proposal.operation == "delete":
-                ok = _apply_delete(document, proposal, author, date, ids)
+                paragraph = _apply_delete(document, proposal, author, date, ids)
             else:
-                _apply_create(document, proposal, author, date, ids)
-                ok = True
-            if not ok:
+                creates.append(proposal)
+                continue
+            if paragraph is None:
+                unmatched.append(proposal)
+            elif proposal.chunk_id:
+                located[proposal.chunk_id] = paragraph
+
+        for proposal in creates:
+            author = SIDE_AUTHORS.get(proposal.proposed_by_side, proposal.proposed_by_side)
+            anchor = _resolve_anchor(document, proposal, located)
+            placed = _apply_create(document, proposal, author, date, ids, anchor=anchor)
+            if not placed:
                 unmatched.append(proposal)
     else:
         unmatched.extend(committed)
@@ -192,8 +274,10 @@ def build_redline_docx(
     if unmatched:
         _append_heading(document, "Unmatched Changes", level=1)
         document.add_paragraph(
-            "The following approved changes could not be confidently located in the "
-            "original document text and are listed here instead of being guessed at:"
+            "The following approved changes could not be confidently placed in the "
+            "original document. Edits and deletions below could not be matched to their "
+            "original text; additions below carried no usable position anchor and were "
+            "appended at the end of the document rather than guessed at:"
         )
         for proposal in unmatched:
             document.add_paragraph(_proposal_summary(proposal), style=None)
