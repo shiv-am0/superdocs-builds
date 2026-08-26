@@ -42,7 +42,7 @@ if the API is unreachable.
 ```bash
 uv sync --extra dev
 uv run python demo/run_demo.py   # full negotiation, keyless, against the built-in fake
-uv run pytest                    # 91 tests, all offline, no live key required
+uv run pytest                    # 104 tests, all offline, no live key required
 ```
 
 That is the one documented command a stranger needs: `uv run python demo/run_demo.py`
@@ -409,7 +409,7 @@ Logged as the brief asks, rather than waiting for clarification:
 ## Testing
 
 ```bash
-uv run pytest          # 91 tests
+uv run pytest          # 104 tests
 uv run ruff check src tests --fix
 ```
 
@@ -432,6 +432,11 @@ API key, no real Slack. Coverage by requirement:
 | Side identity, overrides, and forged cross-side decisions | `tests/test_identity.py` |
 | Real HTTP transport: auth, payload shapes, error mapping | `tests/test_live_transport.py` |
 | SuperDocs client / fake behavior (from the prior phase) | `tests/test_superdocs_client.py` |
+| Deal lifecycle: second document joins, close, promote the authoritative contract | `tests/test_deal_lifecycle.py` |
+| Two real workspaces: per-side tokens, per-workspace file ingest | `tests/test_two_workspace.py` |
+| Decision outcomes reach both sides; a failed notification never undoes a decision | `tests/test_notifications.py` |
+| Block Kit buttons match their listeners; a wrong-side click warns without destroying the card | `tests/test_bolt_wiring.py` |
+| Readable deal names, countable version numbers, older databases migrate | `tests/test_display.py` |
 
 `tests/test_live_transport.py` is worth calling out: `FakeSuperDocs` replaces the
 transport entirely, so it can never catch a bug in how we actually speak HTTP. That file
@@ -466,5 +471,5 @@ demo/
   Acme_Globex_Amendment_1.docx    synthetic supporting document (committed)
   run_demo.py                     full walkthrough incl. leak attempt, search, resume
   output/                         generated exports (gitignored except .gitkeep)
-tests/                   91 tests, all offline
+tests/                   104 tests, all offline
 ```
