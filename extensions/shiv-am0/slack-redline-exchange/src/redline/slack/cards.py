@@ -59,18 +59,27 @@ def flatten_blocks_text(blocks: list[dict[str, Any]] | None) -> str:
 
 
 def build_deal_started_blocks(
-    deal_name: str, filename: str, started_by_side: str
+    deal_name: str, filename: str, started_by_side: str, deal_id: str | None = None
 ) -> tuple[list[dict[str, Any]], str]:
+    """Announce a new negotiation, and hand back the id every command needs.
+
+    Every `/redline` verb takes a deal id as its first argument, so a card that
+    announces a deal without showing its id sends people to the database to find one.
+    It goes in the message text rather than only in a context block, because context
+    elements are the first thing Slack truncates on a narrow screen.
+    """
     text = (
         f":page_facing_up: *{deal_name}* negotiation started from `{filename}` "
         f"by {SIDE_LABELS[started_by_side]}."
     )
+    if deal_id:
+        text += f"\nDeal id: `{deal_id}`"
+    hint = "Both sides will see proposed changes here as they are made."
+    if deal_id:
+        hint = f"Use `{deal_id}` with any /redline command. " + hint
     blocks = [
         _section(text),
-        {
-            "type": "context",
-            "elements": [_mrkdwn("Both sides will see proposed changes here as they are made.")],
-        },
+        {"type": "context", "elements": [_mrkdwn(hint)]},
     ]
     return blocks, text
 

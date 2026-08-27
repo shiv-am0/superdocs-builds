@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from redline.core.documents import title_from_filename
+from redline.slack.cards import flatten_blocks_text
 from tests.conftest import CAP_INSTRUCTION, build_harness, make_contract_docx
 
 pytestmark = pytest.mark.anyio
@@ -94,3 +95,18 @@ def test_an_older_database_gains_the_version_column(tmp_path):
     columns = {r["name"] for r in store._conn.execute("PRAGMA table_info(deals)")}
     assert "version_number" in columns
     Store(str(path))  # opening twice must not fail
+
+
+async def test_the_start_card_carries_the_id_every_command_needs(tmp_path):
+    """Every /redline verb takes a deal id first, so the card announcing a deal has to
+    show one. Without it, the only way to drive the app is to open the database."""
+    h = build_harness(tmp_path)
+    deal = await h.sim.send_file_share("vendor", "Acme_Globex_MSA.docx", make_contract_docx())
+    deal_id = deal["deal_id"]
+
+    started = [m for m in h.sim.shared_messages() if "negotiation started" in m.text.lower()]
+    assert started, "expected a deal-started message in the shared channel"
+
+    card = started[-1]
+    assert deal_id in card.text, "the deal id must survive in the message text"
+    assert deal_id in flatten_blocks_text(card.blocks)

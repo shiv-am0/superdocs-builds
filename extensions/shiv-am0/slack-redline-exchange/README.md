@@ -42,7 +42,7 @@ if the API is unreachable.
 ```bash
 uv sync --extra dev
 uv run python demo/run_demo.py   # full negotiation, keyless, against the built-in fake
-uv run pytest                    # 118 tests, all offline, no live key required
+uv run pytest                    # 119 tests, all offline, no live key required
 ```
 
 That is the one documented command a stranger needs: `uv run python demo/run_demo.py`
@@ -329,7 +329,10 @@ For a single proposal:
   decision. If every proposal in that job's batch is rejected and at least one carries
   feedback, SuperDocs runs its own revision round and we re-post new cards for the
   revised proposals; if at least one proposal in the batch was approved, the rejected
-  ones are simply discarded and marked `rejected` (no revision).
+  ones are simply discarded and marked `rejected` (no revision). **The revision round is
+  only reachable over REST today**: the Slack buttons record approve/reject but never
+  collect a reason, so a rejection driven from Slack carries no feedback and SuperDocs
+  has nothing to revise against. See the cut below.
 - `proposer_only`: the proposal is "ready" once the *proposing* side has decided.
   Only that side's decision determines commit/reject. The counterparty may still click
   Approve/Reject — it's recorded in the audit trail and shown on the card — but it does
@@ -362,6 +365,14 @@ nothing in the negotiation logic is specific to the demo contract's clauses.
   (`usage.monthly_used` / `monthly_remaining` on every job). Adding a second cost ledger
   on top would have been scope creep against the S3 card; noted here as an honest cut,
   not an oversight.
+- **Rejection feedback cannot be given from Slack.** `decide` takes a `feedback`
+  argument, it is stored on the proposal, and it is sent to SuperDocs with the rejection
+  -- and the REST surface exposes it. The Slack cards do not: the buttons submit a
+  decision with no reason attached. Because SuperDocs uses that reason to decide whether
+  to draft a revision, the revision round is in practice unreachable from the Slack
+  surface, which is the one most people will use. A modal on reject is the fix; it is
+  named here rather than left for a reader to discover, because a capability that works
+  on one surface and silently not on another is worse than one that is honestly absent.
 - **No revision-round UI beyond what SuperDocs itself drives.** When `dual_consent`
   triggers SuperDocs' automatic revision round (every change in a batch rejected, with
   feedback), we re-post the new proposal cards SuperDocs drafts; we don't build a second,
@@ -413,7 +424,7 @@ Logged as the brief asks, rather than waiting for clarification:
 ## Testing
 
 ```bash
-uv run pytest          # 118 tests
+uv run pytest          # 119 tests
 uv run ruff check src tests --fix
 ```
 
@@ -477,5 +488,5 @@ demo/
   Acme_Globex_Amendment_1.docx    synthetic supporting document (committed)
   run_demo.py                     full walkthrough incl. leak attempt, search, resume
   output/                         generated exports (gitignored except .gitkeep)
-tests/                   118 tests, all offline
+tests/                   119 tests, all offline
 ```

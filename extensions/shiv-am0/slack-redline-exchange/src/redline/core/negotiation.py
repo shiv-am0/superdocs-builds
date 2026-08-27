@@ -171,7 +171,7 @@ class NegotiationService:
             filename=filename,
             policy=policy,
         )
-        blocks, text = build_deal_started_blocks(name, filename, started_by_side)
+        blocks, text = build_deal_started_blocks(name, filename, started_by_side, deal.id)
         await self._post_shared(deal, blocks, text)
         return deal
 
