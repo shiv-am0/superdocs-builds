@@ -455,6 +455,19 @@ API key, no real Slack. Coverage by requirement:
 | Block Kit buttons match their listeners; a wrong-side click warns without destroying the card | `tests/test_bolt_wiring.py` |
 | Readable deal names, countable version numbers, older databases migrate | `tests/test_display.py` |
 
+Two artifacts in `docs/` are generated rather than written, so you can regenerate them
+instead of trusting mine:
+
+```bash
+uv run pytest -v > docs/test-log.txt                          # 119 tests, offline
+uv run python scripts/capture_rest_transcript.py > docs/rest-transcript.md
+```
+
+`docs/rest-transcript.md` drives a whole negotiation over the REST surface against the
+built-in fake — upload, propose, the same propose again (folded by the idempotency key
+into one billed operation), both approvals, status, audit trail — and prints every
+request and response body verbatim. No key, no network, no human in Slack.
+
 `tests/test_live_transport.py` is worth calling out: `FakeSuperDocs` replaces the
 transport entirely, so it can never catch a bug in how we actually speak HTTP. That file
 drives the real `HTTPTransport` against a mock server to check bearer auth, request
